@@ -405,6 +405,18 @@ public sealed class SlotStore : IDisposable
         }
     }
 
+    // A slot the router `routerPid` spawned itself: owned by it and not adopted
+    // from an announcement. Strict mode resolves every slot id through this.
+    public ChildRhino? GetOwned(string slotId, int routerPid)
+    {
+        lock (_connLock)
+        {
+            return QueryOne(null,
+                "SELECT * FROM slots WHERE slot_id=$s AND router_pid=$r AND adopted=0;",
+                ("$s", slotId), ("$r", routerPid));
+        }
+    }
+
     // Oldest-first (rowid breaks ties within the same started_at millisecond) so
     // "use the first-created slot" resolution is deterministic.
     public IReadOnlyList<ChildRhino> ListReady()

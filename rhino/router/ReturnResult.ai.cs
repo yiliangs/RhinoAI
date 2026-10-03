@@ -4,11 +4,14 @@ using System.Text.Json.Serialization;
 
 namespace Rhino.AI.Router;
 
-// Unified envelope every router tool call returns.
+// Unified envelope every router tool call returns. `Pid` is the process id of the
+// Rhino the call acted on (routed tool calls, spawn_slot, close_slot), so a caller
+// can check it against the pid spawn_slot returned; null when no Rhino was reached.
 public sealed record ReturnResult(
     [property: JsonPropertyName("payload")] JsonNode? Payload,
     [property: JsonPropertyName("error")] ErrorInfo? Error = null,
-    [property: JsonPropertyName("autoSpawnedSlot")] SlotInfo? AutoSpawnedSlot = null)
+    [property: JsonPropertyName("autoSpawnedSlot")] SlotInfo? AutoSpawnedSlot = null,
+    [property: JsonPropertyName("pid")] int? Pid = null)
 {
     // Prevents a fun stack overflow
     [JsonIgnore]

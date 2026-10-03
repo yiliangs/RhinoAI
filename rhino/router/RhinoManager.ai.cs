@@ -46,6 +46,16 @@ public class RhinoManager(
 
     public void SetActiveSlot(string slotId) => ActiveSlotId = slotId;
 
+    // Strict mode (RouterConfig.Strict) is fail-closed: a slot id resolves only to
+    // a Rhino this router process spawned, a slot-less call is refused rather than
+    // defaulted, and announced Rhinos are never adopted. The policy lives here, in
+    // Lookup, List, ScanAnnouncements and GetOrCreateDefaultAsync, so dispatch,
+    // list_slots and close_slot all see the same set of slots.
+    public bool Strict => config.Strict;
+
+    private ChildRhino? Lookup(string slotId) =>
+        Strict ? store.GetOwned(slotId, _routerPid) : store.Get(slotId);
+
     public Task<ChildRhino> SpawnAsync(string? version = null, CancellationToken ct = default)
     {
         string resolved = version ?? ChooseDefaultVersion();
@@ -63,6 +73,8 @@ public class RhinoManager(
     public async Task<(ChildRhino Child, bool WasNewlySpawned)> GetOrCreateDefaultAsync(
         string? requiredVersion = null, CancellationToken ct = default)
     {
+        if (Strict) throw new SlotRequiredException();
+
         ScanAnnouncements();
 
         // A stale pointer (slot closed/crashed) self-heals: the liveness re-check
@@ -282,7 +294,7 @@ public class RhinoManager(
 
     public async Task<bool> CloseAsync(string slotId, CancellationToken ct = default)
     {
-        var child = store.Get(slotId);
+        var child = Lookup(slotId);
         if (child is null) return false;
 
         if (child.Adopted)
@@ -417,19 +429,26 @@ public class RhinoManager(
         }
     }
 
-    public IReadOnlyCollection<ChildRhino> List() => store.ListReady();
+    public IReadOnlyCollection<ChildRhino> List() => Strict
+        ? store.ListAllOwnedBy(_routerPid).Where(c => c.Status == SlotStatus.Ready && !c.Adopted).ToList()
+        : store.ListReady();
 
     public ChildRhino? Get(string slotId)
     {
-        var c = store.Get(slotId);
+        var c = Lookup(slotId);
         return c is null || c.Status != SlotStatus.Ready ? null : c;
     }
 
-    // Status-agnostic existence check. `Get` filters to Ready slots so callers
-    // routing tool calls don't accidentally dispatch into a half-launched slot;
+    // Status-agnostic lookup. `Get` filters to Ready slots so callers routing
+    // tool calls don't accidentally dispatch into a half-launched slot;
     // `close_slot` needs to see launching rows too, otherwise it falsely reports
     // slot_not_found for a slot another router is still spawning.
-    public bool Has(string slotId) => store.Get(slotId) is not null;
+    public ChildRhino? Find(string slotId) => Lookup(slotId);
+
+    // The slot_not_found message in strict mode, shared by dispatch and close_slot.
+    public static string StrictSlotNotFoundMessage(string slotId) =>
+        $"No slot named '{slotId}' among the Rhinos this router spawned; strict mode serves no other Rhino. " +
+        "Pass the slot id that spawn_slot returned, or call spawn_slot to start one.";
 
     // Tombstones the plugin drops when a listener closes cleanly. Siblings to the
     // *.json announcements in the same dir; MUST match RhinoAIHost.WriteDeparture.
@@ -440,6 +459,10 @@ public class RhinoManager(
     // first so a just-closed listener doesn't get re-adopted from a stale *.json.
     public void ScanAnnouncements()
     {
+        // Strict mode adopts nothing and leaves the shared drop directory to the
+        // routers that do; it serves only what it spawned.
+        if (Strict) return;
+
         ConsumeDepartures();
 
         if (!Directory.Exists(RouterPaths.ListenersDir)) return;
@@ -748,6 +771,12 @@ public class RhinoManager(
         }
     }
 }
+
+// A slot-less tool call under strict mode. Carries no slot: there is nothing to
+// fall back to, by design.
+public sealed class SlotRequiredException() : Exception(
+    "Strict mode: this router serves only Rhinos it spawned, and every call must name one. " +
+    "Pass `slot` set to the slot id that spawn_slot returned.");
 
 // Tools layer catches this and turns it into a structured `cannot_close_adopted` payload.
 // Thrown for the three cases the router refuses to touch an adopted slot: the

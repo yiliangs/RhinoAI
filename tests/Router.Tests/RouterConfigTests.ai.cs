@@ -188,4 +188,56 @@ public class RouterConfigTests
         Assert.That(config.StartupTimeoutSeconds, Is.EqualTo(45));
         Assert.That(config.WindowMode, Is.EqualTo(SpawnWindowMode.Hidden));
     }
+
+    [Test]
+    public void Strict_flag_sets_strict()
+    {
+        string? prev = Environment.GetEnvironmentVariable(RouterConfig.StrictEnvVar);
+        try
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, null);
+            Assert.That(RouterConfig.FromArgs(["--strict"]).Strict, Is.True);
+            Assert.That(RouterConfig.FromArgs(["--hidden", "--strict"]).Strict, Is.True);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, prev);
+        }
+    }
+
+    [Test]
+    public void Strict_is_off_when_neither_flag_nor_env_is_set()
+    {
+        string? prev = Environment.GetEnvironmentVariable(RouterConfig.StrictEnvVar);
+        try
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, null);
+            Assert.That(RouterConfig.FromArgs([]).Strict, Is.False);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, prev);
+        }
+    }
+
+    [TestCase("1", true)]
+    [TestCase("true", true)]
+    [TestCase("YES", true)]
+    [TestCase(" on ", true)]
+    [TestCase("0", false)]
+    [TestCase("false", false)]
+    [TestCase("", false)]
+    public void Strict_env_var_is_read(string value, bool expected)
+    {
+        string? prev = Environment.GetEnvironmentVariable(RouterConfig.StrictEnvVar);
+        try
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, value);
+            Assert.That(RouterConfig.FromArgs([]).Strict, Is.EqualTo(expected));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(RouterConfig.StrictEnvVar, prev);
+        }
+    }
 }

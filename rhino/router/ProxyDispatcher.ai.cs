@@ -144,7 +144,7 @@ public class ProxyDispatcher(
                 }
 
                 JsonNode? payload = ExtractPayload(resultElement);
-                return new ReturnResult(payload, Error: null, AutoSpawnedSlot: autoSpawnedSlot).AsJson;
+                return new ReturnResult(payload, Error: null, AutoSpawnedSlot: autoSpawnedSlot, Pid: child.Pid).AsJson;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -158,12 +158,12 @@ public class ProxyDispatcher(
         catch (Exception ex)
         {
             log.LogWarning(ex, "Tool call '{Tool}' (slot '{Slot}') failed", toolName, slotId ?? "(default)");
-            return WrapError(DiagnoseFailure(ex, toolName), autoSpawnedSlot);
+            return WrapError(DiagnoseFailure(ex, toolName), autoSpawnedSlot, child?.Pid);
         }
     }
 
-    private static string WrapError(ErrorInfo error, SlotInfo? autoSpawnedSlot) =>
-        new ReturnResult(Payload: null, Error: error, AutoSpawnedSlot: autoSpawnedSlot).AsJson;
+    private static string WrapError(ErrorInfo error, SlotInfo? autoSpawnedSlot, int? pid = null) =>
+        new ReturnResult(Payload: null, Error: error, AutoSpawnedSlot: autoSpawnedSlot, Pid: pid).AsJson;
 
     private static string WrapClosed(ChildRhino child, string toolName, string? callerSlotArg, SlotInfo? autoSpawnedSlot)
     {
@@ -174,7 +174,7 @@ public class ProxyDispatcher(
         string message =
             $"Rhino slot '{child.SlotId}' (Rhino {child.Version}) was closed (its document or the Rhino window was closed) " +
             $"during '{toolName}'. The slot has been pruned. " + nextAction;
-        return WrapError(new ErrorInfo(Code: "rhino_closed", Message: message), autoSpawnedSlot);
+        return WrapError(new ErrorInfo(Code: "rhino_closed", Message: message), autoSpawnedSlot, child.Pid);
     }
 
     private string WrapCrash(ChildRhino child, string toolName, string? callerSlotArg, SlotInfo? autoSpawnedSlot)
@@ -189,7 +189,8 @@ public class ProxyDispatcher(
             "The stale slot has been pruned. " + nextAction;
         return WrapError(
             new ErrorInfo(Code: "rhino_crashed", Message: message, CrashReportPath: report?.Path),
-            autoSpawnedSlot);
+            autoSpawnedSlot,
+            child.Pid);
     }
 
     // Shared spawn-pipeline shapes route through SpawnDiagnostics (the default
@@ -210,9 +211,15 @@ public class ProxyDispatcher(
 
         return ex switch
         {
+            SlotRequiredException sre => new(
+                Code: "slot_required",
+                Message: sre.Message),
+
             SlotNotFoundException snf => new(
                 Code: "slot_not_found",
-                Message: $"No slot named '{snf.SlotId}'. Call spawn_slot to create one, or list_slots to see what's running."),
+                Message: manager.Strict
+                    ? RhinoManager.StrictSlotNotFoundMessage(snf.SlotId)
+                    : $"No slot named '{snf.SlotId}'. Call spawn_slot to create one, or list_slots to see what's running."),
 
             // Non-connection HttpRequestException (HTTP 5xx from the plugin, etc.)
             // Rhino is alive but the request failed. Surface the message.

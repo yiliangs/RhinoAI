@@ -4,7 +4,8 @@ public record RouterConfig(
     string DefaultVersion,
     int StartupTimeoutSeconds = 120,
     IReadOnlyDictionary<string, string>? RhinoExeOverrides = null,
-    SpawnWindowMode WindowMode = SpawnWindowMode.Normal)
+    SpawnWindowMode WindowMode = SpawnWindowMode.Normal,
+    bool Strict = false)
 {
     public const int DefaultStartupTimeoutSeconds = 120;
 
@@ -24,6 +25,11 @@ public record RouterConfig(
     // Accepts the same words as the flag, plus the usual boolean spellings.
     public const string WindowModeEnvVar = "RHINO_MCP_HIDDEN";
 
+    // Env var fallback for strict slot mode; the `--strict` CLI arg wins. Strict mode
+    // serves only Rhinos this router process spawned: a call without `slot` errors
+    // instead of falling back to a default, and announced Rhinos are never adopted.
+    public const string StrictEnvVar = "RHINO_MCP_STRICT";
+
     private static readonly string[] KnownVersions = ["8", "9", "WIP"];
 
     public static RouterConfig FromArgs(string[] args)
@@ -32,6 +38,7 @@ public record RouterConfig(
         int startupTimeoutSeconds = ReadStartupTimeoutFromEnv();
         Dictionary<string, string> overrides = ReadRhinoExeOverridesFromEnv();
         SpawnWindowMode windowMode = ReadWindowModeFromEnv();
+        bool strict = ReadStrictFromEnv();
 
         // Walk every argument, not every argument but the last: `--hidden` carries no
         // value, so a loop that stops one short would drop it when it is typed last.
@@ -42,7 +49,11 @@ public record RouterConfig(
 
             // `--hidden`, `--hidden=minimized`. The attached form keeps the bare flag
             // unambiguous: a following bare word is the next flag, never this one's value.
-            if (arg == "--hidden")
+            if (arg == "--strict")
+            {
+                strict = true;
+            }
+            else if (arg == "--hidden")
             {
                 windowMode = SpawnWindowMode.Hidden;
             }
@@ -83,7 +94,8 @@ public record RouterConfig(
             defaultVersion,
             startupTimeoutSeconds,
             overrides.Count > 0 ? overrides : null,
-            windowMode);
+            windowMode,
+            strict);
     }
 
     private static string ReadDefaultVersionFromEnv()
@@ -100,6 +112,15 @@ public record RouterConfig(
             return parsed;
         }
         return DefaultStartupTimeoutSeconds;
+    }
+
+    private static bool ReadStrictFromEnv()
+    {
+        string? raw = Environment.GetEnvironmentVariable(StrictEnvVar)?.Trim();
+        return raw is not null && (raw == "1" ||
+            raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+            raw.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+            raw.Equals("on", StringComparison.OrdinalIgnoreCase));
     }
 
     private static SpawnWindowMode ReadWindowModeFromEnv()

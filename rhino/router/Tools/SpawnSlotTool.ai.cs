@@ -9,7 +9,7 @@ namespace Rhino.AI.Router.Tools;
 public class SpawnSlotTool(RhinoManager manager, RhinoCrashReportFinder crashFinder)
 {
     [McpServerTool(Name = "spawn_slot", Title = "Spawn Rhino Slot", ReadOnly = false, Destructive = false)]
-    [Description("Launch a new Rhino instance and return its slot ID. Pass that ID as the `slot` arg on subsequent tool calls to target this Rhino.")]
+    [Description("Launch a new Rhino instance and return its slot ID. Pass that ID as the `slot` arg on subsequent tool calls to target this Rhino. The top-level `pid` is the new Rhino's process id; every later tool call on this slot reports the same `pid`.")]
     public async Task<string> SpawnAsync(
         [Description("Rhino version: '8', '9', 'BETA', or 'WIP' ('9'/'BETA'/'WIP' are interchangeable). Omit to use the router's configured default.")]
         string? version = null,
@@ -19,7 +19,7 @@ public class SpawnSlotTool(RhinoManager manager, RhinoCrashReportFinder crashFin
         {
             ChildRhino child = await manager.SpawnAsync(version, ct).ConfigureAwait(false);
             JsonNode? payload = JsonSerializer.SerializeToNode(child, RouterJsonContext.Default.ChildRhino);
-            return new ReturnResult(payload, Error: null, AutoSpawnedSlot: null).AsJson;
+            return new ReturnResult(payload, Error: null, AutoSpawnedSlot: null, Pid: child.Pid).AsJson;
         }
         catch (Exception ex)
         {
@@ -31,17 +31,20 @@ public class SpawnSlotTool(RhinoManager manager, RhinoCrashReportFinder crashFin
     }
 
     [McpServerTool(Name = "close_slot", Title = "Close Rhino Slot", ReadOnly = false, Destructive = true)]
-    [Description("Close a Rhino slot gracefully. Saves nothing. On success `payload.closed` is true. On failure `error.code` is one of: `slot_not_found` (no slot with that ID is currently running), `cannot_close_adopted` (the slot was a user-started Rhino, the router will not kill it; ask the user to close the Rhino window), `close_failed` (the router tried to close the slot but the operation did not complete; the slot may still be running).")]
+    [Description("Close a Rhino slot gracefully. Saves nothing. On success `payload.closed` is true and the top-level `pid` is the process id of the Rhino that was closed. On failure `error.code` is one of: `slot_not_found` (no slot with that ID is currently running), `cannot_close_adopted` (the slot was a user-started Rhino, the router will not kill it; ask the user to close the Rhino window), `close_failed` (the router tried to close the slot but the operation did not complete; the slot may still be running).")]
     public async Task<string> CloseAsync(
         [Description("Slot ID returned by spawn_slot, or an animal-name slot adopted from a user-started Rhino")]
         string slot,
         CancellationToken ct = default)
     {
-        if (!manager.Has(slot))
+        ChildRhino? target = manager.Find(slot);
+        if (target is null)
         {
             ErrorInfo notFound = new(
                 Code: "slot_not_found",
-                Message: $"No slot named ({slot}). Call list_slots to see what is running.");
+                Message: manager.Strict
+                    ? RhinoManager.StrictSlotNotFoundMessage(slot)
+                    : $"No slot named ({slot}). Call list_slots to see what is running.");
             return new ReturnResult(Payload: null, Error: notFound, AutoSpawnedSlot: null).AsJson;
         }
 
@@ -58,10 +61,10 @@ public class SpawnSlotTool(RhinoManager manager, RhinoCrashReportFinder crashFin
                     Code: "close_failed",
                     Message: $"Slot '{slot}' could not be closed; it may still be running. " +
                         "Retry close_slot, or ask the user to close the Rhino window.");
-                return new ReturnResult(Payload: null, Error: error, AutoSpawnedSlot: null).AsJson;
+                return new ReturnResult(Payload: null, Error: error, AutoSpawnedSlot: null, Pid: target.Pid).AsJson;
             }
             JsonObject payload = new() { ["closed"] = true };
-            return new ReturnResult(payload, Error: null, AutoSpawnedSlot: null).AsJson;
+            return new ReturnResult(payload, Error: null, AutoSpawnedSlot: null, Pid: target.Pid).AsJson;
         }
         catch (AdoptedSlotCloseException ex)
         {
@@ -73,7 +76,7 @@ public class SpawnSlotTool(RhinoManager manager, RhinoCrashReportFinder crashFin
     }
 
     [McpServerTool(Name = "list_slots", Title = "List Rhino Slots", ReadOnly = true, Destructive = false)]
-    [Description("List all currently-running Rhino slots managed by this router. Slots whose Rhino has crashed are pruned before returning. User-started Rhinos that have advertised themselves since the last call are adopted into the list. The list lives in `payload` (an array of slot objects).")]
+    [Description("List all currently-running Rhino slots managed by this router. Slots whose Rhino has crashed are pruned before returning. User-started Rhinos that have advertised themselves since the last call are adopted into the list, except in strict mode, where only the Rhinos this router spawned are listed. The list lives in `payload` (an array of slot objects).")]
     public string List()
     {
         // Adopt anything the plugin has announced since the last call, then probe
