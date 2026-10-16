@@ -35,7 +35,7 @@ public sealed class RhinoManagerResolutionTests
         _store = new SlotStore(NullLogger<SlotStore>.Instance);
         RhinoControlClient control = new(new StubHttpClientFactory(), NullLogger<RhinoControlClient>.Instance);
         _manager = new RhinoManager(
-            RouterConfig.FromArgs([]), control, _store, NullLogger<RhinoManager>.Instance);
+            RouterConfig.FromArgs([]), control, _store, TestDesk.Off(), NullLogger<RhinoManager>.Instance);
     }
 
     [Test]

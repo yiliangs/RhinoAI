@@ -5,7 +5,8 @@ public record RouterConfig(
     int StartupTimeoutSeconds = 120,
     IReadOnlyDictionary<string, string>? RhinoExeOverrides = null,
     SpawnWindowMode WindowMode = SpawnWindowMode.Normal,
-    bool Strict = false)
+    bool Strict = false,
+    int? DeskWaitSeconds = null)
 {
     public const int DefaultStartupTimeoutSeconds = 120;
 
@@ -30,6 +31,11 @@ public record RouterConfig(
     // instead of falling back to a default, and announced Rhinos are never adopted.
     public const string StrictEnvVar = "RHINO_MCP_STRICT";
 
+    // Env var fallback for how long a spawn waits for its rhino-desk slot hold; the
+    // `--desk-wait` CLI arg wins. Seconds; 0 refuses at once when the desk is busy,
+    // and unset, `none` or `unlimited` waits as long as it takes (DeskHold).
+    public const string DeskWaitEnvVar = "RHINO_MCP_DESK_WAIT";
+
     private static readonly string[] KnownVersions = ["8", "9", "WIP"];
 
     public static RouterConfig FromArgs(string[] args)
@@ -39,6 +45,7 @@ public record RouterConfig(
         Dictionary<string, string> overrides = ReadRhinoExeOverridesFromEnv();
         SpawnWindowMode windowMode = ReadWindowModeFromEnv();
         bool strict = ReadStrictFromEnv();
+        int? deskWaitSeconds = ParseDeskWait(Environment.GetEnvironmentVariable(DeskWaitEnvVar), null);
 
         // Walk every argument, not every argument but the last: `--hidden` carries no
         // value, so a loop that stops one short would drop it when it is typed last.
@@ -79,6 +86,10 @@ public record RouterConfig(
                     startupTimeoutSeconds = parsed;
                 }
             }
+            else if (arg == "--desk-wait")
+            {
+                deskWaitSeconds = ParseDeskWait(value, deskWaitSeconds);
+            }
             else if (arg == "--rhino-exe")
             {
                 // `<version>=<path>`; the CLI value overrides any env value for that version.
@@ -95,7 +106,21 @@ public record RouterConfig(
             startupTimeoutSeconds,
             overrides.Count > 0 ? overrides : null,
             windowMode,
-            strict);
+            strict,
+            deskWaitSeconds);
+    }
+
+    // Whole seconds >= 0, or `none`/`unlimited` for no limit; anything else keeps `fallback`.
+    private static int? ParseDeskWait(string? raw, int? fallback)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return fallback;
+        string v = raw.Trim();
+        if (v.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+            v.Equals("unlimited", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return int.TryParse(v, out int parsed) && parsed >= 0 ? parsed : fallback;
     }
 
     private static string ReadDefaultVersionFromEnv()

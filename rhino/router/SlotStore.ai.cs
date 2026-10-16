@@ -17,6 +17,9 @@ namespace Rhino.AI.Router;
 //   - Liveness (pid alive + port listening) is NOT stored — it's probed by
 //     RhinoManager. The DB only persists intent, never asserted health. Dead
 //     rows get DELETEd by reapers; we never write status='dead'.
+//   - A spawned slot's row carries its rhino-desk hold (desk_hold). Every path
+//     that deletes a row releases the holds it carried, after the lock is let go,
+//     so close, reap, departure and shutdown all free the desk the same way.
 //
 // On schema/version mismatch we drop the slots table and rebuild. Slot state
 // is ephemeral runtime registry — wiping is correct on router upgrade.
@@ -27,10 +30,13 @@ public sealed class SlotStore : IDisposable
     private SqliteConnection Connection { get; }
     private ILogger<SlotStore> Logger { get; }
     private readonly object _connLock = new();
+    private readonly DeskHold? _desk;
 
-    public SlotStore(ILogger<SlotStore> log)
+    // `desk` is null only in tests that never spawn; then deleted holds are not released.
+    public SlotStore(ILogger<SlotStore> log, DeskHold? desk = null)
     {
         Logger = log;
+        _desk = desk;
         RouterPaths.EnsureDirectories();
 
         // Cache=Shared lets multiple connections within this process share a
@@ -87,7 +93,13 @@ public sealed class SlotStore : IDisposable
                  status      TEXT NOT NULL,
                  adopted     INTEGER NOT NULL,
                  started_at  INTEGER NOT NULL,
-                 router_pid  INTEGER NOT NULL);");
+                 router_pid  INTEGER NOT NULL,
+                 desk_hold   TEXT);");
+        // A table made by a build of the same version before desk_hold existed
+        // survives the version check above; add the nullable column in place.
+        // Older routers name their columns on INSERT, so they keep working beside it.
+        if (ScalarLong(null, "SELECT COUNT(*) FROM pragma_table_info('slots') WHERE name='desk_hold';") == 0)
+            Exec("ALTER TABLE slots ADD COLUMN desk_hold TEXT;");
         Exec("CREATE INDEX IF NOT EXISTS idx_slots_version_status ON slots(version, status);");
         Exec("CREATE INDEX IF NOT EXISTS idx_slots_pid            ON slots(pid);");
 
@@ -166,7 +178,9 @@ public sealed class SlotStore : IDisposable
     // so concurrent routers can't both claim the same name. Falls back to
     // 'slot-N' (N = max numeric suffix of existing slot-N ids, + 1) when the
     // pool is exhausted. Returns the chosen slot_id alongside the reservation.
-    public (SlotReservation reservation, string slotId) ReserveNewNamed(string version, int routerPid)
+    // `deskHold` is the rhino-desk hold taken for this spawn, if any; the row owns
+    // it from here on and releases it when the row is deleted.
+    public (SlotReservation reservation, string slotId) ReserveNewNamed(string version, int routerPid, string? deskHold = null)
     {
         lock (_connLock)
         {
@@ -188,11 +202,11 @@ public sealed class SlotStore : IDisposable
                 "SELECT COUNT(*) FROM slots WHERE version=$v;",
                 ("$v", version)) > 0;
 
-            Exec(tx, @"INSERT INTO slots(slot_id, version, status, adopted, started_at, router_pid)
-                       VALUES($s, $v, 'launching', 0, $t, $r);",
+            Exec(tx, @"INSERT INTO slots(slot_id, version, status, adopted, started_at, router_pid, desk_hold)
+                       VALUES($s, $v, 'launching', 0, $t, $r, $h);",
                  ("$s", slotId), ("$v", version),
                  ("$t", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
-                 ("$r", routerPid));
+                 ("$r", routerPid), ("$h", (object?)deskHold ?? DBNull.Value));
 
             tx.Commit();
 
@@ -328,10 +342,13 @@ public sealed class SlotStore : IDisposable
 
     public void Delete(string slotId)
     {
+        List<string> holds;
         lock (_connLock)
         {
+            holds = HoldsWhere("slot_id=$s", ("$s", slotId));
             Exec("DELETE FROM slots WHERE slot_id=$s;", ("$s", slotId));
         }
+        ReleaseHolds(holds);
     }
 
     // Prune the slot(s) bound to a specific listener (pid+port). Drives the
@@ -339,9 +356,10 @@ public sealed class SlotStore : IDisposable
     // we drop its row rather than waiting to probe it dead. Returns removed ids.
     public IReadOnlyList<string> DeleteByListener(int pid, int port)
     {
+        List<string> holds;
+        List<string> ids = [];
         lock (_connLock)
         {
-            List<string> ids = [];
             using (SqliteCommand cmd = Connection.CreateCommand())
             {
                 cmd.CommandText = "SELECT slot_id FROM slots WHERE pid=$p AND port=$port;";
@@ -350,10 +368,12 @@ public sealed class SlotStore : IDisposable
                 using SqliteDataReader r = cmd.ExecuteReader();
                 while (r.Read()) ids.Add(r.GetString(0));
             }
+            holds = HoldsWhere("pid=$p AND port=$port", ("$p", pid), ("$port", port));
             if (ids.Count > 0)
                 Exec("DELETE FROM slots WHERE pid=$p AND port=$port;", ("$p", pid), ("$port", port));
-            return ids;
         }
+        ReleaseHolds(holds);
+        return ids;
     }
 
     // Drop-file adoption. Atomically:
@@ -455,11 +475,16 @@ public sealed class SlotStore : IDisposable
     // next one to try to spawn) deletes them once they exceed maxAge.
     public int ReapStaleLaunching(TimeSpan maxAge)
     {
+        List<string> holds;
+        int removed;
         lock (_connLock)
         {
             var cutoff = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (long)maxAge.TotalMilliseconds;
-            return Exec("DELETE FROM slots WHERE status='launching' AND started_at < $c;", ("$c", cutoff));
+            holds = HoldsWhere("status='launching' AND started_at < $c", ("$c", cutoff));
+            removed = Exec("DELETE FROM slots WHERE status='launching' AND started_at < $c;", ("$c", cutoff));
         }
+        ReleaseHolds(holds);
+        return removed;
     }
 
     public void Dispose()
@@ -471,6 +496,27 @@ public sealed class SlotStore : IDisposable
     }
 
     // ----- helpers -----------------------------------------------------------
+
+    // The desk holds carried by the rows `where` matches. Caller holds _connLock.
+    private List<string> HoldsWhere(string where, params (string, object)[] args)
+    {
+        List<string> holds = [];
+        using var cmd = Connection.CreateCommand();
+        cmd.CommandText = $"SELECT desk_hold FROM slots WHERE ({where}) AND desk_hold IS NOT NULL;";
+        foreach (var (k, v) in args)
+            cmd.Parameters.AddWithValue(k, v);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) holds.Add(r.GetString(0));
+        return holds;
+    }
+
+    // Outside _connLock: a release runs the desk CLI, which takes a moment.
+    private void ReleaseHolds(List<string> holds)
+    {
+        if (_desk is null) return;
+        foreach (string hold in holds)
+            _desk.Release(hold);
+    }
 
     private int Exec(string sql, params (string, object)[] args) => Exec(null, sql, args);
 
@@ -539,7 +585,8 @@ public sealed class SlotStore : IDisposable
         Pid: r.IsDBNull(r.GetOrdinal("pid")) ? null : r.GetInt32(r.GetOrdinal("pid")),
         Version: r.GetString(r.GetOrdinal("version")),
         Adopted: r.GetInt32(r.GetOrdinal("adopted")) != 0,
-        Status: Enum.Parse<SlotStatus>(r.GetString(r.GetOrdinal("status")), true));
+        Status: Enum.Parse<SlotStatus>(r.GetString(r.GetOrdinal("status")), true),
+        DeskHold: r.IsDBNull(r.GetOrdinal("desk_hold")) ? null : r.GetString(r.GetOrdinal("desk_hold")));
 }
 
 public enum SlotStatus
