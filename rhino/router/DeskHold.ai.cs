@@ -7,8 +7,8 @@ using Microsoft.Extensions.Logging;
 namespace Rhino.AI.Router;
 
 // A hold with rhino-desk, the file-locked arbiter that decides which Rhino cores
-// may run side by side on one machine's licence (rhino-desk README,
-// "Integrating a session").
+// may run side by side on one machine's licence (doc-agent/DESK.md in paper-CAD-benchmark,
+// which embeds the desk as package rhinodesk with the shim scripts/rhino-desk.ps1).
 //
 // Every Rhino 8 core on a machine shares one Cloud Zoo lease, and a hidden slot
 // started beside a Rhino.Inside host makes both lose the licence about 106 s
@@ -17,12 +17,13 @@ namespace Rhino.AI.Router;
 // slot row goes away (SlotStore releases on every delete path). The desk is a
 // Windows tool; on other platforms, or with RHINO_DESK_OFF set, no hold is taken.
 //
-// The desk is driven through its CLI, as its README asks of C# callers: exit 0
-// prints the hold id, 3 is a refusal with the blockers on stderr, 4 means the
-// desk could not decide.
+// The desk is driven through its CLI, as DESK.md ("Integrating a session")
+// asks of C# callers: exit 0 prints the hold id, 3 is a refusal with the
+// blockers on stderr, 4 means the desk could not decide.
 public sealed class DeskHold(RouterConfig config, ILogger<DeskHold> log, IDeskCli? cli = null, Func<string, string?>? env = null)
 {
-    // The folder holding rhino-desk.ps1; default %USERPROFILE%\source\repos\rhino-desk.
+    // The folder holding rhino-desk.ps1; default %USERPROFILE%\source\repos\paper-CAD-benchmark\scripts,
+    // the desk shim in the benchmark checkout. RHINO_DESK_PATH overrides it.
     public const string PathEnvVar = "RHINO_DESK_PATH";
 
     // Any value but empty, 0, false, no or off spawns without a hold.
@@ -72,7 +73,7 @@ public sealed class DeskHold(RouterConfig config, ILogger<DeskHold> log, IDeskCl
             if (string.IsNullOrEmpty(dir))
             {
                 string home = _env("USERPROFILE") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                dir = Path.Combine(home, "source", "repos", "rhino-desk");
+                dir = Path.Combine(home, "source", "repos", "paper-CAD-benchmark", "scripts");
             }
             return Path.Combine(dir, ScriptName);
         }

@@ -32,12 +32,12 @@ The cost is the other side of adopting nothing. If a strict router dies without 
 
 On Windows every slot spawn, from `spawn_slot` or an auto-spawn, first takes a `slot` hold from rhino-desk, the file-locked arbiter that decides which Rhino cores may share one machine's licence. A hidden slot and a Rhino.Inside host started side by side both lose the licence about 106 s later, so the router waits for the hold before it starts Rhino.exe, attaches the new Rhino's pid to it, and releases it when the slot's row goes: `close_slot`, a slot found dead, a graceful departure, a stale launch and router shutdown all release the same way. The hold id is on the slot record as `deskHold`.
 
-- `RHINO_DESK_PATH`: the rhino-desk folder holding `rhino-desk.ps1`, run through `pwsh`. Default `%USERPROFILE%\source\repos\rhino-desk`. If it is missing, spawning fails with `desk_unavailable` naming the path.
+- `RHINO_DESK_PATH`: the folder holding the desk shim `rhino-desk.ps1`, run through `pwsh`. Default `%USERPROFILE%\source\repos\paper-CAD-benchmark\scripts`, where the paper-CAD-benchmark checkout embeds the desk as package `rhinodesk`. If it is missing, spawning fails with `desk_unavailable` naming the path.
 - `RHINO_DESK_OFF=1`: spawn without a hold, as before; the router logs this once.
 - `RHINO_DESK_OWNER`: the session name the hold records as its owner. Default `<router process name>-<pid>`.
 - `--desk-wait <seconds>` or `RHINO_MCP_DESK_WAIT`: how long a spawn waits for a busy desk. Unset, `none` or `unlimited` waits as long as it takes; `0` refuses at once. While it waits, the router logs `rhino-desk: waiting on <blockers>`.
 
-A refusal fails the spawn with `desk_refused` and names the blockers; nothing is started. `desk_error` means the desk could not decide (exit 4) and changed nothing. `rhino-desk status` shows the live holds.
+A refusal fails the spawn with `desk_refused` and names the blockers; nothing is started. `desk_error` means the desk could not decide (exit 4) and changed nothing. `rhino-desk status` shows the live holds. The desk's reference is `doc-agent/DESK.md` in that checkout.
 
 ## Development notes
 

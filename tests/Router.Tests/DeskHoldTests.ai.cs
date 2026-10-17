@@ -221,6 +221,17 @@ public sealed class DeskHoldTests
         Assert.That(RouterConfig.FromArgs(args).DeskWaitSeconds, Is.EqualTo(expected));
     }
 
+    [Test]
+    public void The_shim_defaults_to_the_benchmark_checkout_and_RHINO_DESK_PATH_overrides_it()
+    {
+        RouterConfig config = RouterConfig.FromArgs([]);
+        DeskHold byDefault = new(config, NullLogger<DeskHold>.Instance, env: name => name == "USERPROFILE" ? @"C:\Users\someone" : null);
+        DeskHold overridden = new(config, NullLogger<DeskHold>.Instance, env: Env(path: @"D:\desk"));
+
+        Assert.That(byDefault.ScriptPath, Is.EqualTo(Path.Combine(@"C:\Users\someone", "source", "repos", "paper-CAD-benchmark", "scripts", "rhino-desk.ps1")));
+        Assert.That(overridden.ScriptPath, Is.EqualTo(Path.Combine(@"D:\desk", "rhino-desk.ps1")));
+    }
+
     // ----- helpers -----------------------------------------------------------
 
     private static string Verb(string call) => call.Split(' ')[0];
