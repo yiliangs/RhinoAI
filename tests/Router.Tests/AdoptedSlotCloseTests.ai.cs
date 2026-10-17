@@ -135,7 +135,7 @@ public sealed class AdoptedSlotCloseTests
     {
         RhinoControlClient control = new(new StubHttpClientFactory(), NullLogger<RhinoControlClient>.Instance);
         return new RhinoManager(
-            RouterConfig.FromArgs(args), control, _store, NullLogger<RhinoManager>.Instance, probe);
+            RouterConfig.FromArgs(args), control, _store, TestDesk.Off(), NullLogger<RhinoManager>.Instance, probe);
     }
 
     private sealed class FakeWindowProbe(WindowVisibility result) : IWindowProbe

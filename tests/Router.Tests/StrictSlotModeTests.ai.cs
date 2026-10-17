@@ -180,7 +180,7 @@ public sealed class StrictSlotModeTests
         CountingProbe probe = new(WindowVisibility.Hidden);
         RhinoControlClient control = new(new StubHttpClientFactory(), NullLogger<RhinoControlClient>.Instance);
         RhinoManager strict = new(
-            RouterConfig.FromArgs(["--hidden", "--strict"]), control, _store,
+            RouterConfig.FromArgs(["--hidden", "--strict"]), control, _store, TestDesk.Off(),
             NullLogger<RhinoManager>.Instance, probe);
 
         Assert.That(await strict.CloseAsync(adopted), Is.False);
@@ -312,7 +312,7 @@ public sealed class StrictSlotModeTests
     {
         RhinoControlClient control = new(new StubHttpClientFactory(), NullLogger<RhinoControlClient>.Instance);
         return new RhinoManager(
-            RouterConfig.FromArgs(strict ? ["--strict"] : []), control, _store, NullLogger<RhinoManager>.Instance);
+            RouterConfig.FromArgs(strict ? ["--strict"] : []), control, _store, TestDesk.Off(), NullLogger<RhinoManager>.Instance);
     }
 
     private static ProxyDispatcher Dispatcher(RhinoManager manager, IHttpClientFactory factory) =>

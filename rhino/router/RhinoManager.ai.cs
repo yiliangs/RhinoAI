@@ -22,12 +22,17 @@ public class RhinoManager(
     RouterConfig config,
     RhinoControlClient control,
     SlotStore store,
+    DeskHold desk,
     ILogger<RhinoManager> log,
     IWindowProbe? windowProbe = null)
 {
     // Injectable so CloseAsync's adopted-slot policy is unit-testable without a
     // real Rhino; production leaves it null and gets the real probe.
     private readonly IWindowProbe _windowProbe = windowProbe ?? new WindowProbe();
+
+    // Starts a Windows slot's Rhino.exe. A test replaces it so the spawn path,
+    // desk hold included, runs without starting Rhino.
+    internal Func<string, int, SpawnWindowMode, Process> LaunchWindowsProcess { get; init; } = LaunchWindows;
 
     // Manually-started Rhino lives on 10500; children walk forward from there.
     private const int ChildPortBase = 10500;
@@ -56,13 +61,49 @@ public class RhinoManager(
     private ChildRhino? Lookup(string slotId) =>
         Strict ? store.GetOwned(slotId, _routerPid) : store.Get(slotId);
 
-    public Task<ChildRhino> SpawnAsync(string? version = null, CancellationToken ct = default)
+    public async Task<ChildRhino> SpawnAsync(string? version = null, CancellationToken ct = default)
     {
         string resolved = version ?? ChooseDefaultVersion();
-        store.ReapStaleLaunching(StaleLaunchingMaxAge);
-        ReapAllDead();
-        (SlotReservation reservation, string slotId) = store.ReserveNewNamed(resolved, _routerPid);
-        return DispatchReservationAsync(resolved, slotId, reservation, ct);
+
+        // The rhino-desk slot hold comes before the slot row: a wait on the desk
+        // can outlast StaleLaunchingMaxAge, after which a peer would reap a
+        // placeholder reserved first. A Rhino that cannot be launched fails here,
+        // before it queues on the desk.
+        string? hold = null;
+        if (desk.Applies)
+        {
+            ResolveLaunchable(resolved);
+            hold = await desk.AcquireAsync(
+                kind: "slot", owner: desk.Owner, purpose: $"rhino {resolved} slot, router pid {_routerPid}",
+                priority: "pilot", pid: _routerPid, allowOwner: false, ct).ConfigureAwait(false);
+        }
+
+        SlotReservation reservation;
+        string slotId;
+        try
+        {
+            store.ReapStaleLaunching(StaleLaunchingMaxAge);
+            ReapAllDead();
+            // From here the slot row owns the hold and releases it when deleted.
+            (reservation, slotId) = store.ReserveNewNamed(resolved, _routerPid, hold);
+        }
+        catch
+        {
+            if (hold is not null) desk.Release(hold);
+            throw;
+        }
+        return await DispatchReservationAsync(resolved, slotId, reservation, ct).ConfigureAwait(false);
+    }
+
+    // The Rhino.exe (or .app) for `version`, or the exception that says why it cannot be launched.
+    private string ResolveLaunchable(string version)
+    {
+        string rhinoExe = RhinoLocator.ResolveRhinoExe(version, config.RhinoExeOverrides);
+#if !DEBUG
+        if (!RhinoLocator.IsPluginInstalled(version))
+            throw new PluginNotInstalledException(version, RhinoLocator.ListVersionsWithPlugin());
+#endif
+        return rhinoExe;
     }
 
     // Resolves the Rhino for a slot-less tool call, in priority order: the slot
@@ -167,19 +208,16 @@ public class RhinoManager(
         try
         {
             IReadOnlyDictionary<string, string>? overrides = config.RhinoExeOverrides;
-            string rhinoExe = RhinoLocator.ResolveRhinoExe(version, overrides);
-
-#if !DEBUG
-            if (!RhinoLocator.IsPluginInstalled(version))
-                throw new PluginNotInstalledException(version, RhinoLocator.ListVersionsWithPlugin());
-#endif
+            string rhinoExe = ResolveLaunchable(version);
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 int port = store.ReservePort(slotId, ChildPortBase, IsPortListening);
                 log.LogInformation("Spawning Rhino {Version} as slot '{Slot}' on port {Port} (exe: {Exe})",
                     version, slotId, port, rhinoExe);
-                Process proc = LaunchWindows(rhinoExe, port, config.WindowMode);
+                Process proc = LaunchWindowsProcess(rhinoExe, port, config.WindowMode);
+                if (store.Get(slotId)?.DeskHold is { } hold)
+                    desk.Attach(hold, proc.Id);
                 switch (WaitForPort(port, TimeSpan.FromSeconds(StartupTimeoutSeconds), proc))
                 {
                     case WaitResult.Bound:
@@ -808,7 +846,8 @@ public record ChildRhino(
     int? Pid,
     string Version,
     bool Adopted = false,
-    [property: JsonIgnore] SlotStatus Status = SlotStatus.Ready)
+    [property: JsonIgnore] SlotStatus Status = SlotStatus.Ready,
+    string? DeskHold = null)
 {
     public string Endpoint => Port is { } port
         ? $"http://localhost:{port}"

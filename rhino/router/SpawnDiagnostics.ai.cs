@@ -32,6 +32,12 @@ public static class SpawnDiagnostics
                     "If the rh-mcp plugin isn't loaded, install it and retry.");
                 return true;
 
+            // rhino-desk did not grant the slot hold, so no Rhino was started. The
+            // message names the blockers (desk_refused) or the desk failure.
+            case DeskHoldException dhe:
+                diagnosis = new(dhe.Code, dhe.Message);
+                return true;
+
             case PlatformNotSupportedException pne:
                 diagnosis = new("unsupported_platform", pne.Message);
                 return true;
